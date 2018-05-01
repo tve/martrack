@@ -16,8 +16,18 @@ UartDev< PinA<2>, PinA<3> > gps_uart;
 UartBufDev< PinA<2>, PinA<3>, 85 > gps_uart;
 #endif
 
+static uint8_t gps_cksum;
+static void gps_putc(int c) { gps_cksum ^= c; gps_uart.putc(c); };
+
 int gps_printf(const char* fmt, ...) {
-    va_list ap; va_start(ap, fmt); veprintf(gps_uart.putc, fmt, ap); va_end(ap);
+    gps_cksum = 0;
+    gps_uart.putc('$');
+    va_list ap; va_start(ap, fmt); veprintf(gps_putc, fmt, ap); va_end(ap);
+    gps_uart.putc('*');
+    int8_t d = gps_cksum/16; gps_uart.putc(d>9 ? 'A'+d-10 : '0'+d);
+           d = gps_cksum%16; gps_uart.putc(d>9 ? 'A'+d-10 : '0'+d);
+    gps_uart.putc('\r');
+    gps_uart.putc('\n');
     return 0;
 }
 
@@ -60,23 +70,31 @@ int main () {
     gps_uart.init();
     gps_uart.baud(9600, hz);
     wait_ms(100);
-    gps_printf("\r\n");
-    gps_printf("$PMTK605*31\r\n");
+    gps_printf("PMTK605");
+    gps_printf("PMTK605");
+    // Only output GPRMC and GPGGA. The bits are:
+    // GLL, RMC, VTG, GGA, GSA, GSV
+    gps_printf("PMTK314,0,1,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0");
 
     printf("printing GPS\r\n");
     while (1) {
         uint8_t ch = gps_uart.getc();
         console.putc(ch);
-#if 1
         bool fix = nmea.parse(ch);
         if (fix) {
-            printf("\r\n20%02d-%02d-%02d %02d:%02d:%02d.%03d %d.%04dN/S %d.%04dE/W %d.%02dkn %d.%02ddeg\r\n",
+            printf("\r\n** 20%02d-%02d-%02d %02d:%02d:%02d.%03d\r\n",
                     nmea.date%100, nmea.date/100%100, nmea.date/10000,
-                    nmea.time/100, nmea.time%100, nmea.msecs/1000, nmea.msecs%1000,
-                    nmea.lat/10000, nmea.lat%10000, nmea.lon/10000, nmea.lon%10000,
+                    nmea.time/100, nmea.time%100, nmea.msecs/1000, nmea.msecs%1000);
+            int32_t lat_int = nmea.lat/600000;
+            int32_t lat_frac = ((nmea.lat>0?nmea.lat:-nmea.lat)%600000) * 5 / 3;
+            int32_t lon_int = nmea.lon/600000;
+            int32_t lon_frac = ((nmea.lon>0?nmea.lon:-nmea.lon)%600000) * 5 / 3;
+            printf("   %d.%06dN/S %d.%06dE/W %d.%dm %d.%02dkn %d.%02ddeg\r\n",
+                    lat_int, lat_frac, lon_int, lon_frac, nmea.alt/10, nmea.alt%10,
                     nmea.knots/100, nmea.knots%100, nmea.course/100, nmea.course%100);
+            printf("   %d sats, HDOP:%d.%02d~%dm\r\n",
+                    nmea.sats, nmea.hdop/100, nmea.hdop%100, 3*nmea.hdop/100);
         }
-#endif
     }
 
 }
