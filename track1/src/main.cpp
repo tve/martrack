@@ -1,7 +1,15 @@
-// Show a map of devices found on the I2C bus.
+// Copyright (c) 2018 by Thorsten von Eicken
+//
+// Marine tracker, v1
+
+static constexpr int gps_tx_target = 10 * 1000; // target milliseconds between updates
+
+int printf(const char* fmt, ...); // forward decl to allow .h files to print for debug
 
 #include <jee.h>
 #include <jee/nmea.h>
+#include <jee/spi-rf96lora.h>
+#include <jee/varint.h>
 
 UartBufDev< PinA<9>, PinA<10> > console;
 
@@ -36,6 +44,9 @@ NMEA nmea;
 I2cBus< PinB<7>, PinB<6> > bus;  // standard I2C pins for SDA and SCL
 PinA<15> led;
 
+SpiGpio< PinA<7>, PinA<6>, PinA<5>, PinA<4>, 0 > spiRf;
+RF96lora< decltype(spiRf) > radio;
+
 template< typename T >
 void detectI2c (T bus) {
     for (int i = 0; i < 128; i += 16) {
@@ -53,6 +64,30 @@ void detectI2c (T bus) {
     }
 }
 
+constexpr int nmea_vals = 9;
+uint8_t nmea_packet[4+5*nmea_vals];
+
+// nmeaMakePacket converts the NMEA info into a varint-encoded packet, returns bytes placed into
+// buffer.  Format:
+// UTC date (DDMMYY), time (dHHMMSS, d=deciseconds), lat [deg*1E6], lon [deg*1E6], alt [m*10],
+// horiz-speed [m/s*1E2], course [deg*1E2], sats, hdop [*1E2]
+int nmeaMakePacket(NMEA &nmea, uint8_t *buf, int len) {
+    int32_t time = nmea.time*100 + nmea.msecs/1000 + nmea.msecs/100%10*1000000;
+    int32_t vals[nmea_vals] = { (int32_t)nmea.date, (int32_t)time, nmea.lat*5/3, nmea.lon*5/3,
+        nmea.alt, nmea.knots*514/1000, nmea.course,
+        nmea.sats, nmea.hdop
+    };
+    for (int i=0; i<nmea_vals; i++) printf(" %d", vals[i]);
+    printf("\r\n");
+    int cnt = encodeVarint(vals, nmea_vals, buf, len);
+    for (int i=0; i<cnt; i++) printf(" %02x", buf[i]);
+    printf("\r\n");
+    int c2 = decodeVarint(buf, cnt, vals, nmea_vals);
+    for (int i=0; i<c2; i++) printf(" %d", vals[i]);
+    printf("\r\n");
+    return cnt;
+}
+
 int main () {
     console.init();
     printf("\r\n===== marine tracker v1 starting ====\r\n\n");
@@ -63,7 +98,12 @@ int main () {
     wait_ms(500);
     led = 1;
 
+    printf("I2C bus =====\r\n");
     detectI2c(bus);
+
+    printf("LoRa radio =====\r\n");
+    radio.init(61, 0xcb, lorawan_bw125sf8, 432600);
+    radio.txPower(20);
 
     // switch uart baud rate to 9600
     printf("setting up GPS\r\n");
@@ -77,11 +117,16 @@ int main () {
     gps_printf("PMTK314,0,1,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0");
 
     printf("printing GPS\r\n");
+
+    uint32_t gps_tx_interval = gps_tx_target; // current interval in ms
+    uint32_t gps_tx_last = 0;                 // tick of last tx
+
     while (1) {
         uint8_t ch = gps_uart.getc();
-        console.putc(ch);
+        //console.putc(ch);
         bool fix = nmea.parse(ch);
-        if (fix) {
+        if (fix && ticks > gps_tx_last+gps_tx_interval-50) {
+            gps_tx_last = ticks;
             printf("\r\n** 20%02d-%02d-%02d %02d:%02d:%02d.%03d\r\n",
                     nmea.date%100, nmea.date/100%100, nmea.date/10000,
                     nmea.time/100, nmea.time%100, nmea.msecs/1000, nmea.msecs%1000);
@@ -92,8 +137,33 @@ int main () {
             printf("   %d.%06dN/S %d.%06dE/W %d.%dm %d.%02dkn %d.%02ddeg\r\n",
                     lat_int, lat_frac, lon_int, lon_frac, nmea.alt/10, nmea.alt%10,
                     nmea.knots/100, nmea.knots%100, nmea.course/100, nmea.course%100);
-            printf("   %d sats, HDOP:%d.%02d~%dm\r\n",
-                    nmea.sats, nmea.hdop/100, nmea.hdop%100, 3*nmea.hdop/100);
+            printf("   %d sats, HDOP:%d.%02d\r\n",
+                    nmea.sats, nmea.hdop/100, nmea.hdop%100);
+
+            uint8_t gpsPacket[128];
+            gpsPacket[0] = 0x80 + 4; // gps packet type
+            int cnt = nmeaMakePacket(nmea, gpsPacket+1, 120);
+            radio.addInfo(gpsPacket+1+cnt);
+            cnt += 3; // total length with packet type and 2 info bytes
+            uint8_t hdr = (1<<5) + 4; // request ack, we're node 4
+            radio.send(hdr, gpsPacket, cnt);
+            int ack;
+            uint8_t ackBuf[10];
+            do {
+                ack = radio.getAck(ackBuf, 10);
+            } while (ack == -1);
+
+            if (ack > 0) {
+                // success, use target interval
+                gps_tx_interval = gps_tx_target;
+            } else {
+                // no ACK, quickly retry if first failure, else exponential back-off
+                if (gps_tx_interval == gps_tx_target) gps_tx_interval /= 10;
+                else gps_tx_interval *= 2;
+                if (gps_tx_interval > 10*gps_tx_target) gps_tx_interval = 10*gps_tx_target;
+            }
+
+            printf("** sent %d bytes, ack=%d, interval=%dms\r\n", cnt, ack, gps_tx_interval);
         }
     }
 
