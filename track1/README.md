@@ -40,26 +40,27 @@ Desired additional peripherals:
 - display, 4-wire SPI requires select and d/c
 - cell radio, requires uart
 - bluetooth, requires uart
+- note: should have resets for radio, display, ble, cell
 
-PA0 - BLE rx (usart4 tx)
-PA1 - BLE tx (usart4 rx?)
+PA0 - unused          [cell radio rx (usart4 tx)]
+PA1 - battery voltage [cell radio tx (usart4 rx?)]
 PA2 - GPS RX (usart2)
 PA3 - GPS TX (usart2)
 PA4 - SEL radio
 PA5 - SCK radio, flash, display
 PA6 - MISO radio, flash, display
 PA7 - MOSI radio, flash, display
-PA8 - DIO0 radio
+PA8 - 
 PA9 - RX ftdi (usart1)
 PA10 - TX ftdi (usart1)
 PA11 - LED
 PA12 - 
 PA13 - SWD-IO
 PA14 - SWD-CLK
-PB0 - DIO2
-PB1 - DIO3
-PB3 - cell radio rx (usart5 tx)
-PB4 - cell radio tx (usart5 rx)
+PB0 -  display reset
+PB1 - 
+PB3 - BLE rx (usart5 tx)
+PB4 - BLE tx (usart5 rx)
 PB5 - display d/c
 PB6 - SCL IMU
 PB7 - SDA IMU

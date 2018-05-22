@@ -10,19 +10,40 @@ int printf(const char* fmt, ...); // forward decl to allow .h files to print for
 #include <jee/nmea.h>
 #include <jee/spi-rf96lora.h>
 #include <jee/varint.h>
+#include <jee/spi-st7565r.h>
+#include <jee/text-font.h>
+#include "ser-hm11.h"
 
-UartBufDev< PinA<9>, PinA<10> > console;
+// Console
+
+UartBufDev< PinA<9>, PinA<10>, 80 > console;
 
 int printf(const char* fmt, ...) {
     va_list ap; va_start(ap, fmt); veprintf(console.putc, fmt, ap); va_end(ap);
     return 0;
 }
 
-#if 0
-UartDev< PinA<2>, PinA<3> > gps_uart;
-#else
+// Display
+
+SpiGpio< PinA<7>, PinA<6>, PinA<5>, PinC<15>, 0 > spiDisp;
+PinB<5> dispDC;
+PinB<0> dispReset;
+ST7565R< decltype(spiDisp), decltype(dispDC) > disp;
+Font5x7< decltype(disp) > text_disp;
+
+int lcd_printf(const char* fmt, ...) {
+    va_list ap; va_start(ap, fmt); veprintf(text_disp.putc, fmt, ap); va_end(ap);
+    return 0;
+}
+
+void lcd_xy(uint16_t x, uint16_t y) {
+    text_disp.x = 6*x;
+    text_disp.y = 8*y;
+}
+
+// GPS
+
 UartBufDev< PinA<2>, PinA<3>, 85 > gps_uart;
-#endif
 
 static uint8_t gps_cksum;
 static void gps_putc(int c) { gps_cksum ^= c; gps_uart.putc(c); };
@@ -40,6 +61,8 @@ int gps_printf(const char* fmt, ...) {
 }
 
 NMEA nmea;
+
+// I2C
 
 I2cBus< PinB<7>, PinB<6> > bus;  // standard I2C pins for SDA and SCL
 PinA<15> led;
@@ -89,21 +112,32 @@ int nmeaMakePacket(NMEA &nmea, uint8_t *buf, int len) {
 }
 
 int main () {
-    console.init();
-    printf("\r\n===== marine tracker v1 starting ====\r\n\n");
     led.mode(Pinmode::out);
     led = 0;
-    int hz = fullSpeedClock();
+    console.init();
+    printf("\r\n===== marine tracker v0.2 starting ====\r\n\n");
+    uint32_t hz = fullSpeedClock();
     console.baud(115200, hz);
-    wait_ms(500);
-    led = 1;
+    //wait_ms(500);
+
+    // Init display and say hello
+    dispReset = 0;
+    dispReset.mode(Pinmode::out);
+    wait_ms(1);
+    dispReset = 1;
+    wait_ms(10);
+    spiDisp.init();
+    disp.init();
+    disp.clear();
+    lcd_printf("Marine tracker v0.2\n");
+    printf("Display ready\r\n");
 
     printf("I2C bus =====\r\n");
     detectI2c(bus);
 
     printf("LoRa radio =====\r\n");
     radio.init(61, 0xcb, lorawan_bw125sf8, 432600);
-    radio.txPower(20);
+    radio.txPower(2); // <================================== !
 
     // switch uart baud rate to 9600
     printf("setting up GPS\r\n");
@@ -116,17 +150,26 @@ int main () {
     // GLL, RMC, VTG, GGA, GSA, GSV
     gps_printf("PMTK314,0,1,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0");
 
-    printf("printing GPS\r\n");
+    printf("Bluetooth =====\r\n");
+    ble_init(hz);
+
+    printf("Starting main loop =====\r\n");
 
     uint32_t gps_tx_interval = gps_tx_target; // current interval in ms
     uint32_t gps_tx_last = 0;                 // tick of last tx
+    uint8_t hr_spin = 0;
+    uint8_t gps_spin = 0;
+    static const char spinner[] = "-\\|/";
 
     while (1) {
+        // Handle GPS
         uint8_t ch = gps_uart.getc();
         //console.putc(ch);
         bool fix = nmea.parse(ch);
         if (fix && ticks > gps_tx_last+gps_tx_interval-50) {
             gps_tx_last = ticks;
+
+            // print to serial
             printf("\r\n** 20%02d-%02d-%02d %02d:%02d:%02d.%03d\r\n",
                     nmea.date%100, nmea.date/100%100, nmea.date/10000,
                     nmea.time/100, nmea.time%100, nmea.msecs/1000, nmea.msecs%1000);
@@ -140,6 +183,18 @@ int main () {
             printf("   %d sats, HDOP:%d.%02d\r\n",
                     nmea.sats, nmea.hdop/100, nmea.hdop%100);
 
+            // display on LCD
+            lcd_xy(0, 7);
+            lcd_printf("%02d:%02d:%02d -- %d sats",
+                nmea.time/100, nmea.time%100, nmea.msecs/1000, nmea.sats);
+            lcd_xy(0, 5);
+            lcd_printf("%d.%02dkn %d.%02ddeg %c",
+                nmea.knots/100, nmea.knots%100, nmea.course/100, nmea.course%100,
+                spinner[gps_spin++]);
+            if (gps_spin >= sizeof(spinner)-1) gps_spin = 0;
+
+            // TX on radio
+#if 0
             uint8_t gpsPacket[128];
             gpsPacket[0] = 0x80 + 4; // gps packet type
             int cnt = nmeaMakePacket(nmea, gpsPacket+1, 120);
@@ -164,19 +219,21 @@ int main () {
             }
 
             printf("** sent %d bytes, ack=%d, interval=%dms\r\n", cnt, ack, gps_tx_interval);
+#endif
         }
+
+        // Handle BLE
+        uint8_t hr = ble_heart_rate();
+        if (hr > 10) {
+            lcd_xy(0, 3);
+            lcd_printf("                   ");
+            lcd_xy(0, 2);
+            lcd_printf("HR %3d bpm %c", hr, spinner[hr_spin++]);
+        } else if (hr == 1) {
+            lcd_xy(0, 3);
+            lcd_printf("no skin contact    ");
+        }
+        if (hr_spin >= sizeof(spinner)-1) hr_spin = 0;
     }
 
 }
-
-// sample output:
-//
-//  00:                         -- -- -- -- -- -- -- --
-//  10: -- -- -- -- -- -- -- -- -- -- -- -- -- 1D -- --
-//  20: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
-//  30: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
-//  40: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
-//  50: 50 51 52 53 54 55 56 57 -- -- -- -- -- -- -- --
-//  60: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
-//  70: -- -- -- -- -- -- -- --
-
