@@ -1,5 +1,5 @@
-Simple Breadboard Marine Tracker
-================================
+Prototype ocean sports tracker
+==============================
 
 V1 pinout
 ---------
@@ -57,7 +57,7 @@ PA11 - LED
 PA12 - 
 PA13 - SWD-IO
 PA14 - SWD-CLK
-PB0 -  display reset
+PB0 -  Radio&display reset
 PB1 - 
 PB3 - BLE rx (usart5 tx)
 PB4 - BLE tx (usart5 rx)

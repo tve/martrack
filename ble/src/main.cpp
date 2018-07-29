@@ -290,9 +290,9 @@ bool ble_conn() {
     printf("== conn\r\n");
 
 #if 1
-    char *addr = "0022D0C01DCA"; // polar
+    const char *addr = "0022D0C01DCA"; // polar
 #else
-    char *addr = "F08BB25976B0"; // simulation
+    const char *addr = "F08BB25976B0"; // simulation
 #endif
     printf("BLE: connect to %s", addr);
     ble_printf("AT+CON%s", addr);

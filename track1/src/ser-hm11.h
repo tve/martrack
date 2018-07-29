@@ -28,7 +28,7 @@ bool strneq(const uint8_t s1[], const uint8_t s2[], int n) {
 
 // Bluetooth module uart
 
-UartBufDev< PinB<3>, PinB<4>, 80 > ble_uart;
+//UartBufDev< PinB<3>, PinB<4>, 80 > ble_uart;
 //PinB<7> ble_reset;
 
 int ble_printf(const char* fmt, ...) {
@@ -70,7 +70,7 @@ int ble_try_resp() {
         }
     }
     ble_buf[len] = 0;
-    bledebugf("BLE[%d] <%s>\r\n", len, ble_buf);
+    //bledebugf("BLE[%d] <%s>\r\n", len, ble_buf);
     return len;
 }
 
@@ -300,9 +300,9 @@ bool ble_conn() {
     bledebugf("== conn\r\n");
 
 #if 1
-    char *addr = "0022D0C01DCA"; // polar
+    const char *addr = "0022D0C01DCA"; // polar
 #else
-    char *addr = "F08BB25976B0"; // simulation
+    const char *addr = "F08BB25976B0"; // simulation
 #endif
     bledebugf("BLE: connect to %s", addr);
     ble_printf("AT+CON%s", addr);
@@ -410,7 +410,7 @@ uint8_t ble_heart_rate() {
         break;
     }
     if (start_state != ble_state) {
-        printf("BLE: %d->%d\r\n", start_state, ble_state);
+        //printf("BLE: %d->%d\r\n", start_state, ble_state);
         ble_tick = ticks; // record when we entered a new state
     }
     return 0;
